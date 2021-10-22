@@ -624,6 +624,7 @@ fn parse_map(data: (String, MapData)) -> Result<(String, Map), BpfError> {
         BPF_MAP_TYPE_PERCPU_HASH => Ok(Map::PerCpuHashMap(map)),
         BPF_MAP_TYPE_LRU_PERCPU_HASH => Ok(Map::PerCpuLruHashMap(map)),
         BPF_MAP_TYPE_PERF_EVENT_ARRAY => Ok(Map::PerfEventArray(map)),
+        BPF_MAP_TYPE_RINGBUF => Ok(Map::RingBuf(map)),
         BPF_MAP_TYPE_SOCKHASH => Ok(Map::SockHash(map)),
         BPF_MAP_TYPE_SOCKMAP => Ok(Map::SockMap(map)),
         BPF_MAP_TYPE_BLOOM_FILTER => Ok(Map::BloomFilter(map)),
