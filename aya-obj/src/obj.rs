@@ -71,6 +71,8 @@ pub struct Object {
     // symbol_offset_by_name caches symbols that could be referenced from a
     // BTF VAR type so the offsets can be fixed up
     pub(crate) symbol_offset_by_name: HashMap<String, u64>,
+    /// Indicate that `.struct_ops` or `.struct_ops.link` section is present.
+    pub(crate) has_struct_ops: bool,
 }
 
 /// An eBPF program
@@ -578,6 +580,7 @@ impl Object {
             symbol_table: HashMap::new(),
             section_sizes: HashMap::new(),
             symbol_offset_by_name: HashMap::new(),
+            has_struct_ops: false,
         }
     }
 
@@ -885,6 +888,7 @@ impl Object {
                     );
                 }
             }
+            BpfSectionKind::StructOps | BpfSectionKind::StructOpsLink => self.has_struct_ops = true,
             BpfSectionKind::Undefined | BpfSectionKind::License | BpfSectionKind::Version => {}
         }
 
@@ -1075,6 +1079,10 @@ pub enum BpfSectionKind {
     License,
     /// `version`
     Version,
+    /// `.struct_ops`
+    StructOps,
+    /// `.struct_ops.link`
+    StructOpsLink,
 }
 
 impl BpfSectionKind {
@@ -1098,6 +1106,10 @@ impl BpfSectionKind {
             BpfSectionKind::Btf
         } else if name == ".BTF.ext" {
             BpfSectionKind::BtfExt
+        } else if name == ".struct_ops" {
+            BpfSectionKind::StructOps
+        } else if name == ".struct_ops.link" {
+            BpfSectionKind::StructOpsLink
         } else {
             BpfSectionKind::Undefined
         }

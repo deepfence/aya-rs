@@ -621,6 +621,11 @@ impl Object {
             Ok(None)
         }
     }
+
+    /// Indicates if the [Object] needs its [Btf] to be able to load by current kernel.
+    pub fn kernel_needs_btf(&self) -> bool {
+        self.has_struct_ops
+    }
 }
 
 unsafe fn read_btf_header(data: &[u8]) -> btf_header {

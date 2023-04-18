@@ -345,8 +345,12 @@ impl<'a> BpfLoader<'a> {
 
         let btf_fd = if let Some(features) = &FEATURES.btf {
             if let Some(btf) = obj.fixup_and_sanitize_btf(features)? {
-                // load btf to the kernel
-                Some(load_btf(btf.to_bytes())?)
+                match load_btf(btf.to_bytes()) {
+                    Ok(btf_fd) => Some(btf_fd),
+                    // Only report an error here if the BTF is truely needed, otherwise proceed without.
+                    Err(err) if obj.kernel_needs_btf() => return Err(BpfError::BtfError(err)),
+                    Err(_) => None,
+                }
             } else {
                 None
             }
