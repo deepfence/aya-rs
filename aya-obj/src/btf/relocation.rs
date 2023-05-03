@@ -1,12 +1,14 @@
-use core::{mem, ptr, str::FromStr};
+use core::{mem, ops::Bound::Included, ptr};
 
 use alloc::{
     borrow::ToOwned,
+    collections::BTreeMap,
     format,
     string::{String, ToString},
     vec,
     vec::Vec,
 };
+use object::SectionIndex;
 
 use crate::{
     btf::{
@@ -18,7 +20,7 @@ use crate::{
         BPF_K, BPF_LD, BPF_LDX, BPF_ST, BPF_STX, BPF_W, BTF_INT_SIGNED,
     },
     util::HashMap,
-    Function, Object, ProgramSection,
+    Function, Object,
 };
 
 #[cfg(not(feature = "std"))]
@@ -43,9 +45,13 @@ enum RelocationError {
     #[error(transparent)]
     IOError(#[from] std::io::Error),
 
-    /// Program not found
-    #[error("program not found")]
-    ProgramNotFound,
+    /// Section not found
+    #[error("section not found")]
+    SectionNotFound,
+
+    /// Function not found
+    #[error("function not found")]
+    FunctionNotFound,
 
     /// Invalid relocation access string
     #[error("invalid relocation access string {access_str}")]
@@ -227,23 +233,17 @@ impl Object {
                         error: RelocationError::BtfError(e),
                     })?;
 
-            let program_section = match ProgramSection::from_str(&section_name) {
-                Ok(program) => program,
-                Err(_) => continue,
-            };
-            let section_name = program_section.name();
-
-            let function = self
-                .programs
-                .get_mut(section_name)
-                .and_then(|x| self.functions.get_mut(&x.function_key()))
-                .ok_or(BtfRelocationError {
-                    section: section_name.to_owned(),
-                    error: RelocationError::ProgramNotFound,
+            let (section_index, _) = self
+                .section_infos
+                .get(&section_name.to_string())
+                .ok_or_else(|| BtfRelocationError {
+                    section: format!("section@{section_name}"),
+                    error: RelocationError::SectionNotFound,
                 })?;
 
-            match relocate_btf_function(
-                function,
+            match relocate_btf_functions(
+                section_index,
+                &mut self.functions,
                 relos,
                 local_btf,
                 target_btf,
@@ -252,7 +252,7 @@ impl Object {
                 Ok(_) => {}
                 Err(error) => {
                     return Err(BtfRelocationError {
-                        section: section_name.to_owned(),
+                        section: section_name.to_string(),
                         error,
                     })
                 }
@@ -263,16 +263,41 @@ impl Object {
     }
 }
 
-fn relocate_btf_function<'target>(
-    function: &mut Function,
+fn get_function_by_relocation<'a>(
+    section_index: &SectionIndex,
+    functions: &'a mut BTreeMap<(usize, u64), Function>,
+    rel: &Relocation,
+) -> Option<&'a mut Function> {
+    for (_, func) in functions.range_mut((
+        Included(&(section_index.0, 0)),
+        Included(&(section_index.0, u64::MAX)),
+    )) {
+        let ins_offset = rel.ins_offset / mem::size_of::<bpf_insn>();
+        let func_offset = func.section_offset / mem::size_of::<bpf_insn>();
+        let func_size = func.instructions.len();
+
+        if ins_offset >= func_offset && ins_offset < func_offset + func_size {
+            return Some(func);
+        }
+    }
+
+    None
+}
+
+fn relocate_btf_functions<'target>(
+    section_index: &SectionIndex,
+    functions: &mut BTreeMap<(usize, u64), Function>,
     relos: &[Relocation],
     local_btf: &Btf,
     target_btf: &'target Btf,
     candidates_cache: &mut HashMap<u32, Vec<Candidate<'target>>>,
 ) -> Result<(), RelocationError> {
     for rel in relos {
+        let function = get_function_by_relocation(section_index, functions, rel)
+            .ok_or(RelocationError::FunctionNotFound)?;
+
         let instructions = &mut function.instructions;
-        let ins_index = rel.ins_offset / mem::size_of::<bpf_insn>();
+        let ins_index = (rel.ins_offset - function.section_offset) / mem::size_of::<bpf_insn>();
         if ins_index >= instructions.len() {
             return Err(RelocationError::InvalidInstructionIndex {
                 index: ins_index,
@@ -861,7 +886,7 @@ impl ComputedRelocation {
     ) -> Result<(), RelocationError> {
         let instructions = &mut function.instructions;
         let num_instructions = instructions.len();
-        let ins_index = rel.ins_offset / mem::size_of::<bpf_insn>();
+        let ins_index = (rel.ins_offset - function.section_offset) / mem::size_of::<bpf_insn>();
         let ins =
             instructions
                 .get_mut(ins_index)

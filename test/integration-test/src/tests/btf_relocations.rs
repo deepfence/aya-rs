@@ -34,7 +34,7 @@ fn relocate_field() {
             value = __builtin_preserve_access_index(ptr->c);
         "#,
     }
-    .build()
+    .build(true)
     .unwrap();
     assert_eq!(test.run().unwrap(), 2);
     assert_eq!(test.run_no_btf().unwrap(), 3);
@@ -54,10 +54,30 @@ fn relocate_enum() {
             value = __builtin_preserve_enum_value(*(typeof(enum foo) *)D, BPF_ENUMVAL_VALUE);
         "#,
     }
-    .build()
+    .build(true)
     .unwrap();
     assert_eq!(test.run().unwrap(), 0xBBBBBBBB);
     assert_eq!(test.run_no_btf().unwrap(), 0xAAAAAAAA);
+}
+
+#[integration_test]
+fn relocate_local_function() {
+    let test = RelocationTest {
+        local_definition: r#"
+            enum foo { D = 0xDDDDDDDD };
+        "#,
+        target_btf: r#"
+            enum foo { D = 0xEEEEEEEE } e1;
+        "#,
+        relocation_code: r#"
+            #define BPF_ENUMVAL_VALUE 1
+            value = __builtin_preserve_enum_value(*(typeof(enum foo) *)D, BPF_ENUMVAL_VALUE);
+        "#,
+    }
+    .build(false)
+    .unwrap();
+    assert_eq!(test.run().unwrap(), 0xEEEEEEEE);
+    assert_eq!(test.run_no_btf().unwrap(), 0xDDDDDDDD);
 }
 
 #[integration_test]
@@ -74,7 +94,7 @@ fn relocate_enum_signed() {
             value = __builtin_preserve_enum_value(*(typeof(enum foo) *)D, BPF_ENUMVAL_VALUE);
         "#,
     }
-    .build()
+    .build(true)
     .unwrap();
     assert_eq!(test.run().unwrap() as i64, -0x7BBBBBBBi64);
     assert_eq!(test.run_no_btf().unwrap() as i64, -0x7AAAAAAAi64);
@@ -94,7 +114,7 @@ fn relocate_enum64() {
             value = __builtin_preserve_enum_value(*(typeof(enum foo) *)D, BPF_ENUMVAL_VALUE);
         "#,
     }
-    .build()
+    .build(true)
     .unwrap();
     assert_eq!(test.run().unwrap(), 0xCCCCCCCCDDDDDDDD);
     assert_eq!(test.run_no_btf().unwrap(), 0xAAAAAAAABBBBBBBB);
@@ -114,7 +134,7 @@ fn relocate_enum64_signed() {
             value = __builtin_preserve_enum_value(*(typeof(enum foo) *)D, BPF_ENUMVAL_VALUE);
         "#,
     }
-    .build()
+    .build(true)
     .unwrap();
     assert_eq!(test.run().unwrap() as i64, -0xCCCCCCCDDDDDDDDi64);
     assert_eq!(test.run_no_btf().unwrap() as i64, -0xAAAAAAABBBBBBBBi64);
@@ -137,7 +157,7 @@ fn relocate_pointer() {
             value = (__u64) __builtin_preserve_access_index(ptr->f);
         "#,
     }
-    .build()
+    .build(true)
     .unwrap();
     assert_eq!(test.run().unwrap(), 42);
     assert_eq!(test.run_no_btf().unwrap(), 42);
@@ -163,47 +183,86 @@ struct RelocationTest {
 
 impl RelocationTest {
     /// Build a RelocationTestRunner
-    fn build(&self) -> Result<RelocationTestRunner> {
+    fn build(&self, relocation_code_in_prog: bool) -> Result<RelocationTestRunner> {
         Ok(RelocationTestRunner {
-            ebpf: self.build_ebpf()?,
+            ebpf: self.build_ebpf(relocation_code_in_prog)?,
             btf: self.build_btf()?,
         })
     }
 
     /// - Generate the source eBPF filling a template
     /// - Compile it with clang
-    fn build_ebpf(&self) -> Result<Vec<u8>> {
+    fn build_ebpf(&self, relocation_code_in_prog: bool) -> Result<Vec<u8>> {
         let local_definition = self.local_definition;
         let relocation_code = self.relocation_code;
-        let (_tmp_dir, compiled_file) = compile(&format!(
-            r#"
-                #include <linux/bpf.h>
 
-                static long (*bpf_map_update_elem)(void *map, const void *key, const void *value, __u64 flags) = (void *) 2;
+        let source_code = if relocation_code_in_prog {
+            format!(
+                r#"
+                    #include <linux/bpf.h>
 
-                {local_definition}
+                    static long (*bpf_map_update_elem)(void *map, const void *key, const void *value, __u64 flags) = (void *) 2;
 
-                struct {{
-                  int (*type)[BPF_MAP_TYPE_ARRAY];
-                  __u32 *key;
-                  __u64 *value;
-                  int (*max_entries)[1];
-                }} output_map
-                __attribute__((section(".maps"), used));
+                    {local_definition}
 
-                __attribute__((section("tracepoint/bpf_prog"), used))
-                int bpf_prog(void *ctx) {{
-                  __u32 key = 0;
-                  __u64 value = 0;
-                  {relocation_code}
-                  bpf_map_update_elem(&output_map, &key, &value, BPF_ANY);
-                  return 0;
-                }}
+                    struct {{
+                      int (*type)[BPF_MAP_TYPE_ARRAY];
+                      __u32 *key;
+                      __u64 *value;
+                      int (*max_entries)[1];
+                    }} output_map
+                    __attribute__((section(".maps"), used));
 
-                char _license[] __attribute__((section("license"), used)) = "GPL";
-            "#
-        ))
-        .context("Failed to compile eBPF program")?;
+                    __attribute__((section("tracepoint/bpf_prog"), used))
+                    int bpf_prog(void *ctx) {{
+                      __u32 key = 0;
+                      __u64 value = 0;
+                      {relocation_code}
+                      bpf_map_update_elem(&output_map, &key, &value, BPF_ANY);
+                      return 0;
+                    }}
+
+                    char _license[] __attribute__((section("license"), used)) = "GPL";
+                "#
+            )
+        } else {
+            format!(
+                r#"
+                    #include <linux/bpf.h>
+
+                    static long (*bpf_map_update_elem)(void *map, const void *key, const void *value, __u64 flags) = (void *) 2;
+
+                    {local_definition}
+
+                    struct {{
+                      int (*type)[BPF_MAP_TYPE_ARRAY];
+                      __u32 *key;
+                      __u64 *value;
+                      int (*max_entries)[1];
+                    }} output_map
+                    __attribute__((section(".maps"), used));
+
+                    __attribute__ ((noinline)) int bpf_func() {{
+                      __u32 key = 0;
+                      __u64 value = 0;
+                      {relocation_code}
+                      bpf_map_update_elem(&output_map, &key, &value, BPF_ANY);
+                      return 0;
+                    }}
+
+                    __attribute__((section("tracepoint/bpf_prog"), used))
+                    int bpf_prog(void *ctx) {{
+                      bpf_func();
+                      return 0;
+                    }}
+
+                    char _license[] __attribute__((section("license"), used)) = "GPL";
+                "#
+            )
+        };
+
+        let (_tmp_dir, compiled_file) =
+            compile(&source_code).context("Failed to compile eBPF program")?;
         let bytecode =
             std::fs::read(compiled_file).context("Error reading compiled eBPF program")?;
         Ok(bytecode)
