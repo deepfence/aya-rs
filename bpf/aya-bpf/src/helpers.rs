@@ -430,6 +430,11 @@ pub unsafe fn bpf_probe_read_user_str_bytes(
         return Err(-1);
     }
 
+    // verifier complains if this check is missing on v5.19
+    if len < 1 {
+        return Err(-1);
+    }
+
     // len includes NULL byte
     Ok(&dest[..len - 1])
 }
@@ -562,7 +567,7 @@ pub unsafe fn bpf_probe_read_kernel_str(src: *const u8, dest: &mut [u8]) -> Resu
 /// # Errors
 ///
 /// On failure, this function returns Err(-1).
-#[inline]
+#[inline(always)]
 pub unsafe fn bpf_probe_read_kernel_str_bytes(
     src: *const u8,
     dest: &mut [u8],
@@ -572,19 +577,24 @@ pub unsafe fn bpf_probe_read_kernel_str_bytes(
         dest.len() as u32,
         src as *const c_void,
     );
-    if len <= 0 {
+    if len < 1 {
         return Err(-1);
     }
 
     let len = len as usize;
-    if len >= dest.len() {
+    if len > dest.len() {
         // this can never happen, it's needed to tell the verifier that len is
         // bounded
         return Err(-1);
     }
 
+    // verifier complains if this check is missing on v5.19
+    if len < 1 {
+        return Err(-1);
+    }
+
     // len includes NULL byte
-    Ok(&dest[..len - 1])
+    Ok(unsafe { dest.get_unchecked(..len - 1) })
 }
 
 /// Write bytes to the _user space_ pointer `src` and store them as a `T`.
