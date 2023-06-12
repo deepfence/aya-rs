@@ -9,7 +9,7 @@ use std::{
     ops::Deref,
     os::unix::prelude::AsRawFd,
     ptr,
-    sync::atomic::{fence, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{fence, AtomicU32, AtomicUsize, Ordering}, borrow::Borrow,
 };
 
 use libc::{munmap, sysconf, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, _SC_PAGESIZE};
@@ -59,8 +59,8 @@ use crate::{
 /// #    #[error(transparent)]
 /// #    Bpf(#[from] aya::BpfError),
 /// # }
-/// # struct Poll<T: AsRef<MapData>>(RingBuf<T>);
-/// # impl<T: AsRef<MapData>> Poll<T> {
+/// # struct Poll<T: Borrow<MapData>>(RingBuf<T>);
+/// # impl<T: Borrow<MapData>> Poll<T> {
 /// #    fn new(inner: RingBuf<T>) -> Self { Self (inner) }
 /// #    async fn readable(&mut self) {}
 /// #    fn get_inner_mut(&mut self) -> &mut RingBuf<T> { &mut self.0 }
@@ -88,7 +88,7 @@ use crate::{
 ///
 /// [`PerfEventArray`]: crate::maps::PerfEventArray
 #[doc(alias = "BPF_MAP_TYPE_RINGBUF")]
-pub struct RingBuf<T: AsRef<MapData>> {
+pub struct RingBuf<T: Borrow<MapData>> {
     _map: T,
     map_fd: i32,
     data_ptr: *const u8,
@@ -101,9 +101,9 @@ pub struct RingBuf<T: AsRef<MapData>> {
     mask: usize,
 }
 
-impl<T: AsRef<MapData>> RingBuf<T> {
+impl<T: Borrow<MapData>> RingBuf<T> {
     pub(crate) fn new(map: T) -> Result<Self, MapError> {
-        let data = map.as_ref();
+        let data = map.borrow();
 
         // Determine page_size, map_fd, and set mask to map size - 1
         let page_size = unsafe { sysconf(_SC_PAGESIZE) } as usize;
@@ -252,7 +252,7 @@ impl<T: AsRef<MapData>> RingBuf<T> {
     }
 }
 
-impl<T: AsRef<MapData>> Drop for RingBuf<T> {
+impl<T: Borrow<MapData>> Drop for RingBuf<T> {
     fn drop(&mut self) {
         if !self.consumer_pos_ptr.is_null() {
             // SAFETY: `consumer_pos` is not null and consumer page is not null and
@@ -273,16 +273,16 @@ impl<T: AsRef<MapData>> Drop for RingBuf<T> {
     }
 }
 
-impl<T: AsRef<MapData>> AsRawFd for RingBuf<T> {
+impl<T: Borrow<MapData>> AsRawFd for RingBuf<T> {
     fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
         self.map_fd
     }
 }
 
 /// An ringbuf item. When this item is dropped, the consumer index in the ringbuf will be updated.
-pub struct RingBufItem<'a, T: AsRef<MapData>>(&'a mut RingBuf<T>);
+pub struct RingBufItem<'a, T: Borrow<MapData>>(&'a mut RingBuf<T>);
 
-impl<'a, T: AsRef<MapData>> Deref for RingBufItem<'a, T> {
+impl<'a, T: Borrow<MapData>> Deref for RingBufItem<'a, T> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -300,7 +300,7 @@ impl<'a, T: AsRef<MapData>> Deref for RingBufItem<'a, T> {
     }
 }
 
-impl<'a, T: AsRef<MapData>> Drop for RingBufItem<'a, T> {
+impl<'a, T: Borrow<MapData>> Drop for RingBufItem<'a, T> {
     fn drop(&mut self) {
         self.0.consume();
     }
