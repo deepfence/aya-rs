@@ -116,7 +116,7 @@ pub enum MapError {
     },
 
     /// Failed to create map
-    #[error("failed to create map `{name}` with code {code}")]
+    #[error("failed to create map `{name}` with code {code}, {io_error}")]
     CreateError {
         /// Map name
         name: String,

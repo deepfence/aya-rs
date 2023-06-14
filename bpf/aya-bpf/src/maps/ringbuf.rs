@@ -19,7 +19,10 @@ pub struct RingBuf {
     def: UnsafeCell<bpf_map_def>,
 }
 
-unsafe impl Sync for RingBuf {}
+enum RingBufferEntryState {
+    Uncommited,
+    Commited
+}
 
 /// A ring buffer entry, returned from [`RingBuf::reserve`].
 ///
@@ -28,31 +31,45 @@ unsafe impl Sync for RingBuf {}
 /// [`submit`]: RingBufEntry::submit
 /// [`discard`]: RingBufEntry::discard
 #[must_use = "BPF verifier requires ring buffer entries to be either submitted or discarded"]
-pub struct RingBufEntry<T: 'static>(&'static mut MaybeUninit<T>);
+pub struct RingBufEntry<T: 'static>{
+    item: &'static mut MaybeUninit<T>,
+    state: RingBufferEntryState,
+}
 
 impl<T> Deref for RingBufEntry<T> {
     type Target = MaybeUninit<T>;
 
     fn deref(&self) -> &Self::Target {
-        self.0
+        self.item
     }
 }
 
 impl<T> DerefMut for RingBufEntry<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0
+        self.item
     }
 }
 
 impl<T> RingBufEntry<T> {
     /// Discard this ring buffer entry. The entry will be skipped by the userspace reader.
-    pub fn discard(self, flags: u64) {
-        unsafe { bpf_ringbuf_discard(self.0.as_mut_ptr() as *mut _, flags) };
+    pub fn discard(mut self, flags: u64) {
+        self.state = RingBufferEntryState::Commited;
+        unsafe { bpf_ringbuf_discard(self.item.as_mut_ptr() as *mut _, flags) };
     }
 
     /// Commit this ring buffer entry. The entry will be made visible to the userspace reader.
-    pub fn submit(self, flags: u64) {
-        unsafe { bpf_ringbuf_submit(self.0.as_mut_ptr() as *mut _, flags) };
+    pub fn submit(mut self, flags: u64) {
+        self.state = RingBufferEntryState::Commited;
+        unsafe { bpf_ringbuf_submit(self.item.as_mut_ptr() as *mut _, flags) };
+    }
+}
+
+impl<T> Drop for RingBufEntry<T> {
+    fn drop(&mut self) {
+        if matches!(self.state, RingBufferEntryState::Uncommited) {
+            // TODO(tjonak): user should be able to specify flags here
+            unsafe { bpf_ringbuf_discard(self.item.as_mut_ptr() as *mut _, 0) }
+        }
     }
 }
 
@@ -115,9 +132,10 @@ impl RingBuf {
             bpf_ringbuf_reserve(self.def.get() as *mut _, mem::size_of::<T>() as _, flags)
                 as *mut MaybeUninit<T>
         };
-        match ptr.is_null() {
-            true => None,
-            false => Some(RingBufEntry(unsafe { &mut *ptr })),
+        if ptr.is_null() {
+            None
+        } else {
+            Some(RingBufEntry{item: unsafe { &mut *ptr }, state: RingBufferEntryState::Uncommited})
         }
     }
 

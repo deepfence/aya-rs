@@ -12,12 +12,12 @@ use std::{
     sync::atomic::{fence, AtomicU32, AtomicUsize, Ordering}, borrow::Borrow,
 };
 
-use libc::{munmap, sysconf, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, _SC_PAGESIZE};
+use libc::{munmap, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
 
 use crate::{
     generated::{BPF_RINGBUF_BUSY_BIT, BPF_RINGBUF_DISCARD_BIT, BPF_RINGBUF_HDR_SZ},
     maps::{MapData, MapError},
-    sys::mmap,
+    sys::mmap, util::page_size,
 };
 
 /// A map that can be used to receive events from eBPF programs.
@@ -101,13 +101,16 @@ pub struct RingBuf<T: Borrow<MapData>> {
     mask: usize,
 }
 
+// TODO(tjonak): at glance we could use other primitives to make this type Send
+unsafe impl<T: Borrow<MapData>> Send for RingBuf<T> {}
+
 impl<T: Borrow<MapData>> RingBuf<T> {
     pub(crate) fn new(map: T) -> Result<Self, MapError> {
         let data = map.borrow();
 
         // Determine page_size, map_fd, and set mask to map size - 1
-        let page_size = unsafe { sysconf(_SC_PAGESIZE) } as usize;
-        let map_fd = data.fd_or_err().map_err(MapError::from)?;
+        let page_size = page_size();
+        let map_fd = data.fd_or_err()?;
         let mask = (data.obj.max_entries() - 1) as usize;
 
         // Map writable consumer page
